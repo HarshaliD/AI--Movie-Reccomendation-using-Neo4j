@@ -1,0 +1,26 @@
+# Environment variables (contains sensitive secrets/credentials)
+.env
+*.env
+.env.*
+!.env.example
+
+# Python virtual environment
+.venv/
+venv/
+env/
+ENV/
+
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*~
+
+# Operating system files
+.DS_Store
+Thumbs.db
