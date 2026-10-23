@@ -1,10 +1,17 @@
-
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
 from google import genai
 
+# Robust .env loading: checks current working directory, script directory, and parent directory
 load_dotenv()
+if not os.getenv("NEO4J_URI"):
+    base_dir = Path(__file__).resolve().parent
+    for candidate in [base_dir / ".env", base_dir.parent / ".env", base_dir / "movie-recommendation" / ".env"]:
+        if candidate.is_file():
+            load_dotenv(dotenv_path=candidate)
+            break
 
 # Neo4j configuration
 URI = os.getenv("NEO4J_URI")
