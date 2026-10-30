@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import sys
+from typing import Any, Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
@@ -367,25 +368,102 @@ def render_employee_profile(emp):
     st.markdown(card_html, unsafe_allow_html=True)
 
 
+FIELD_LABEL_MAP = {
+    "salary": "Salary",
+    "location": "Location",
+    "skills": "Skills",
+    "designation": "Designation",
+    "department": "Department",
+    "age": "Age",
+    "joining_date": "Joining Date",
+    "manager_name": "Manager",
+    "manager_id": "Manager ID",
+    "employee_id": "Employee ID",
+    "name": "Name",
+}
+
+
+def _format_field_value(field_name: str, value: Any) -> str:
+    """Format an individual field value appropriately for display."""
+    if value is None:
+        return "N/A"
+    if field_name == "salary":
+        return _format_inr(value)
+    if field_name == "skills":
+        if isinstance(value, list):
+            return ", ".join(str(s) for s in value) if value else "None listed"
+        return str(value) if str(value).strip() else "None listed"
+    if field_name == "age":
+        return f"{value} yrs" if value != "N/A" else "N/A"
+    return str(value) if str(value).strip() else "N/A"
+
+
+def render_employee_fields(emp: Dict[str, Any], field_data: Dict[str, Any]):
+    """Render employee identity and only the requested field(s)."""
+    emp_name = emp.get("name", "Unknown")
+    emp_id = emp.get("employee_id", "N/A")
+
+    items_html = []
+    for field, val in field_data.items():
+        label = FIELD_LABEL_MAP.get(field, field.replace("_", " ").title())
+        formatted_val = _format_field_value(field, val)
+        if field == "skills" and isinstance(val, list) and val:
+            val_html = "".join(f'<span class="emp-badge">{html.escape(s)}</span>' for s in val)
+        else:
+            val_html = html.escape(formatted_val)
+        items_html.append(
+            f'<div class="emp-grid-item">'
+            f'<div class="emp-grid-label">{html.escape(label)}</div>'
+            f'{val_html}'
+            f'</div>'
+        )
+
+    grid_content = "".join(items_html) if items_html else '<div class="emp-grid-item" style="color: #64748b;">No requested field data available</div>'
+
+    card_html = f"""
+    <div class="emp-card">
+        <div class="emp-name">{html.escape(emp_name)} <span style="font-size: 0.9rem; color: #64748b;">({html.escape(emp_id)})</span></div>
+        <div class="emp-grid" style="margin-top: 0.75rem; margin-bottom: 0;">
+            {grid_content}
+        </div>
+    </div>
+    """
+    st.markdown(card_html, unsafe_allow_html=True)
+
+
 def render_employee_results(result):
     """Render structured employee query results based on query_type."""
     query_type = result.get("query_type")
     data = result.get("data")
     msg = result.get("message", "")
+    status = result.get("status")
 
-    if result.get("status") == "empty" or not data:
-        st.info(msg)
+    if status == "clarification_needed":
+        st.warning(f"⚠️ {msg}")
+        return
+
+    if status == "empty" or not data:
+        st.info(msg or "No matching employees found.")
         return
 
     if query_type == "employee_profile":
         lookup = data
         if lookup.get("status") == "exact" and lookup.get("employee"):
+            st.success(msg)
             render_employee_profile(lookup["employee"])
         elif lookup.get("status") == "multiple":
             st.warning(msg)
             candidates = lookup.get("candidates", [])
             for c in candidates:
                 render_employee_profile(c)
+
+    elif query_type == "get_field":
+        st.success(msg)
+        emp = result.get("employee")
+        if emp and isinstance(data, dict):
+            render_employee_fields(emp, data)
+        else:
+            st.info("Field data unavailable.")
 
     elif query_type == "manager_lookup":
         st.success(msg)
@@ -415,27 +493,42 @@ def render_employee_results(result):
                 })
             st.dataframe(pd.DataFrame(table_rows), use_container_width=True)
 
+    elif query_type == "count":
+        st.success(msg)
+        count_val = result.get("count", 0)
+        st.metric(label="Matching Employee Count", value=count_val)
+
+    elif query_type == "department_highest":
+        st.success(msg)
+        if data:
+            top_dept = data[0]
+            st.metric(label=f"Top Department: {top_dept['department']}", value=f"{top_dept['count']} Employees")
+
     elif query_type in ("headcount", "headcount_all"):
         st.success(msg)
         df_counts = pd.DataFrame(data)
         df_counts.rename(columns={"department": "Department", "count": "Employee Count"}, inplace=True)
         st.dataframe(df_counts, use_container_width=True)
 
-    elif query_type == "filtered_list":
+    elif query_type in ("filtered_list", "count_and_list"):
         st.success(msg)
+        if query_type == "count_and_list":
+            st.metric(label="Total Matching Count", value=result.get("count", len(data)))
         records = data
+        fields = result.get("fields")
+        if not fields:
+            if records and isinstance(records[0], dict):
+                fields = list(records[0].keys())
+            else:
+                fields = ["employee_id", "name", "designation", "department", "location", "salary", "skills"]
+
         table_rows = []
         for r in records:
-            table_rows.append({
-                "ID": r["employee_id"],
-                "Name": r["name"],
-                "Role": r["designation"],
-                "Department": r.get("department", "N/A"),
-                "Location": r["location"],
-                "Salary": _format_inr(r.get("salary")),
-                "Manager": r.get("manager_name") or "None",
-                "Skills": ", ".join(r.get("skills", [])),
-            })
+            row = {}
+            for f in fields:
+                label = FIELD_LABEL_MAP.get(f, f.replace("_", " ").title())
+                row[label] = _format_field_value(f, r.get(f))
+            table_rows.append(row)
         st.dataframe(pd.DataFrame(table_rows), use_container_width=True)
 
     else:
@@ -665,10 +758,18 @@ def main():
             st.error("Database connection failed. Please check your Neo4j configuration.")
             return
 
+        gemini_client = None
+        try:
+            gemini_client = init_gemini()
+        except Exception:
+            # Fallback parser handles offline / missing Gemini credentials seamlessly
+            st.error("Fallback parser : {e}") 
+            return # change to pass for deterministic code handling
+
         with st.spinner("Querying employee knowledge graph..."):
             try:
                 with driver.session(database=DATABASE) as session:
-                    result = handle_employee_query(active_query, session)
+                    result = handle_employee_query(active_query, session, client=gemini_client)
             except Exception:
                 st.error("Failed to execute employee graph query. Please check database connectivity.")
                 return
